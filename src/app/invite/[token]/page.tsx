@@ -1,0 +1,175 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import { useParams } from "next/navigation";
+import { useTranslations } from "next-intl";
+import { z } from "zod";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form";
+import { useToast } from "@/components/ui/toast";
+import { trpc } from "@/lib/trpc";
+import { translateError } from "@/lib/translateError";
+
+const InvitePage = () => {
+  const params = useParams();
+  const token = String(params?.token ?? "");
+  const t = useTranslations("invite");
+  const tCommon = useTranslations("common");
+  const tErrors = useTranslations("errors");
+  const { toast } = useToast();
+
+  const inviteQuery = trpc.publicAuth.inviteDetails.useQuery({ token }, { enabled: Boolean(token) });
+
+  const schema = useMemo(
+    () =>
+      z.object({
+        name: z.string().min(2, t("nameRequired")),
+        password: z.string().min(8, t("passwordMin")),
+        preferredLocale: z.enum(["ru", "kg"]),
+      }),
+    [t],
+  );
+
+  const form = useForm<z.infer<typeof schema>>({
+    resolver: zodResolver(schema),
+    defaultValues: { name: "", password: "", preferredLocale: "ru" },
+  });
+
+  const acceptMutation = trpc.publicAuth.acceptInvite.useMutation({
+    onSuccess: async (_, variables) => {
+      await fetch("/api/locale", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ locale: variables.preferredLocale }),
+      });
+      toast({ variant: "success", description: t("accepted") });
+      setAccepted(true);
+    },
+    onError: (error) => {
+      toast({ variant: "error", description: translateError(tErrors, error) });
+    },
+  });
+
+  const [accepted, setAccepted] = useState(false);
+
+  if (accepted) {
+    return (
+      <div className="mx-auto flex min-h-screen max-w-xl flex-col justify-center px-4">
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("acceptedTitle")}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm text-gray-600">
+            <p>{t("acceptedHint")}</p>
+            <a href="/login" className="text-sm font-semibold text-ink underline">
+              {t("goToLogin")}
+            </a>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto flex min-h-screen max-w-xl flex-col justify-center px-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("title")}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {inviteQuery.isLoading ? (
+            <div className="flex items-center gap-2 text-sm text-gray-500">
+              <Spinner className="h-4 w-4" />
+              {tCommon("loading")}
+            </div>
+          ) : inviteQuery.data ? (
+            <>
+              <div className="rounded-md border border-gray-100 bg-gray-50 p-3 text-sm text-gray-600">
+                <p>{t("inviteFor", { org: inviteQuery.data.organizationName })}</p>
+                <p>{t("inviteEmail", { email: inviteQuery.data.email })}</p>
+                <p>{t("inviteRole", { role: inviteQuery.data.role })}</p>
+              </div>
+              <Form {...form}>
+                <form
+                  className="space-y-4"
+                  onSubmit={form.handleSubmit((values) =>
+                    acceptMutation.mutate({ token, ...values }),
+                  )}
+                >
+                  <FormField
+                    control={form.control}
+                    name="name"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t("name")}</FormLabel>
+                        <FormControl>
+                          <Input {...field} placeholder={t("namePlaceholder")} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="password"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t("password")}</FormLabel>
+                        <FormControl>
+                          <Input {...field} type="password" placeholder={t("passwordPlaceholder")} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="preferredLocale"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t("preferredLocale")}</FormLabel>
+                        <FormControl>
+                          <Select value={field.value} onValueChange={field.onChange}>
+                            <SelectTrigger>
+                              <SelectValue placeholder={t("selectLocale")} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="ru">{tCommon("locales.ru")}</SelectItem>
+                              <SelectItem value="kg">{tCommon("locales.kg")}</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <Button type="submit" className="w-full" disabled={acceptMutation.isLoading}>
+                    {acceptMutation.isLoading ? tCommon("loading") : t("accept")}
+                  </Button>
+                </form>
+              </Form>
+            </>
+          ) : (
+            <p className="text-sm text-gray-500">{t("invalidInvite")}</p>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
+export default InvitePage;

@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-gray-50 text-ink antialiased;
+  font-feature-settings: "liga" 1, "kern" 1;
+}
+
+@supports not selector(:focus-visible) {
+  .button-focus-ring:focus {
+    @apply ring-2 ring-ink/20 ring-offset-2 ring-offset-white;
+  }
+}
+
+a {
+  @apply text-accent hover:underline;
+}
+
+label {
+  @apply text-sm font-medium text-ink;
+}
+
+input, select, textarea {
+  @apply w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-ink shadow-sm;
+}
+
+table {
+  @apply w-full border-collapse;
+}
+
+th {
+  @apply text-left text-xs font-semibold uppercase tracking-wide text-gray-500;
+}
+
+td {
+  @apply text-sm text-ink;
+}

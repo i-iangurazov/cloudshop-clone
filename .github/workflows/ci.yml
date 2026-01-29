@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: inventory
+          POSTGRES_PASSWORD: inventory
+          POSTGRES_DB: inventory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U inventory"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      DATABASE_URL: postgresql://inventory:inventory@localhost:5432/inventory?schema=public
+      NEXTAUTH_SECRET: ci-secret
+      NEXTAUTH_URL: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+      - name: Sync schema
+        run: pnpm prisma db push
+      - name: Run checks
+        run: pnpm test:ci

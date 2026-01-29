@@ -1,0 +1,232 @@
+import PDFDocument from "pdfkit";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
+import { prisma } from "@/server/db/prisma";
+import { getServerAuthToken } from "@/server/auth/token";
+import { normalizeLocale, toIntlLocale, defaultLocale } from "@/lib/locales";
+import { getMessageFromFallback } from "@/lib/i18nFallback";
+import { cookies } from "next/headers";
+import { recordFirstEvent } from "@/server/services/productEvents";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+type MessageTree = Record<string, unknown>;
+type PriceTagItem = { productId: string; quantity: number };
+
+const loadMessages = async (locale: string) => {
+  const filepath = join(process.cwd(), "messages", `${locale}.json`);
+  const raw = await readFile(filepath, "utf8");
+  return JSON.parse(raw) as MessageTree;
+};
+
+const getMessageValue = (messages: MessageTree | undefined, path: string) => {
+  if (!messages) {
+    return undefined;
+  }
+  const parts = path.split(".");
+  let current: unknown = messages;
+  for (const part of parts) {
+    if (!current || typeof current !== "object") {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return typeof current === "string" ? current : undefined;
+};
+
+const getMessage = (messages: MessageTree | undefined, key: string) =>
+  getMessageValue(messages, key) ?? getMessageFromFallback(key) ?? key;
+
+const createTranslator = (messages: MessageTree | undefined, namespace?: string) => {
+  if (!namespace) {
+    return (key: string) => getMessage(messages, key);
+  }
+  return (key: string) => getMessage(messages, `${namespace}.${key}`);
+};
+
+const formatCurrency = (amount: number, locale: string) =>
+  new Intl.NumberFormat(locale, { style: "currency", currency: "KGS" }).format(amount);
+
+export const POST = async (request: Request) => {
+  const localeCookie = cookies().get("NEXT_LOCALE")?.value;
+  const locale = normalizeLocale(localeCookie) ?? defaultLocale;
+  let messages: MessageTree | undefined;
+  try {
+    messages = await loadMessages(locale);
+  } catch {
+    messages = undefined;
+  }
+  const tPriceTags = createTranslator(messages, "priceTags");
+  const tErrors = createTranslator(messages, "errors");
+
+  const token = await getServerAuthToken();
+  if (!token) {
+    return new Response(tErrors("unauthorized"), { status: 401 });
+  }
+
+  const body = await request.json().catch(() => null);
+  if (!body || typeof body !== "object") {
+    return new Response(tErrors("invalidInput"), { status: 400 });
+  }
+
+  const template = body.template as "3x8" | "2x5" | undefined;
+  const items = Array.isArray(body.items) ? (body.items as PriceTagItem[]) : [];
+  const storeId = typeof body.storeId === "string" && body.storeId ? body.storeId : null;
+
+  if (!template || !["3x8", "2x5"].includes(template)) {
+    return new Response(tErrors("invalidInput"), { status: 400 });
+  }
+  if (!items.length) {
+    return new Response(tErrors("invalidInput"), { status: 400 });
+  }
+
+  const parsedItems: PriceTagItem[] = items
+    .map((item: PriceTagItem) => ({
+      productId: typeof item.productId === "string" ? item.productId : "",
+      quantity: Number(item.quantity ?? 0),
+    }))
+    .filter(
+      (item: PriceTagItem) =>
+        item.productId && Number.isFinite(item.quantity) && item.quantity > 0,
+    );
+
+  if (!parsedItems.length) {
+    return new Response(tErrors("invalidInput"), { status: 400 });
+  }
+
+  let storeName: string | null = null;
+  if (storeId) {
+    const store = await prisma.store.findUnique({ where: { id: storeId } });
+    if (!store || store.organizationId !== token.organizationId) {
+      return new Response(tErrors("storeAccessDenied"), { status: 403 });
+    }
+    storeName = store.name;
+  }
+
+  const productIds = parsedItems.map((item: PriceTagItem) => item.productId);
+  const products = await prisma.product.findMany({
+    where: {
+      id: { in: productIds },
+      organizationId: token.organizationId as string,
+      isDeleted: false,
+    },
+    include: { barcodes: { select: { value: true } } },
+  });
+
+  const productMap = new Map(products.map((product) => [product.id, product]));
+  const storePrices = storeId
+    ? await prisma.storePrice.findMany({
+        where: {
+          organizationId: token.organizationId as string,
+          storeId,
+          productId: { in: products.map((product) => product.id) },
+          variantKey: "BASE",
+        },
+        select: { productId: true, priceKgs: true },
+      })
+    : [];
+  type StorePriceRow = { productId: string; priceKgs: unknown };
+  const priceMap = new Map(
+    storePrices.map((price: StorePriceRow) => [price.productId, price]),
+  );
+
+  type LabelRow = { name: string; sku: string; barcode: string; price: number | null };
+  const labels: LabelRow[] = parsedItems.flatMap((item: PriceTagItem) => {
+    const product = productMap.get(item.productId);
+    if (!product) {
+      return [] as LabelRow[];
+    }
+    const basePrice = product.basePriceKgs ? Number(product.basePriceKgs) : null;
+    const override = priceMap.get(product.id);
+    const effectivePrice = override ? Number(override.priceKgs) : basePrice;
+    const barcode = product.barcodes?.[0]?.value ?? "";
+    const label = {
+      name: product.name,
+      sku: product.sku,
+      barcode,
+      price: effectivePrice,
+    };
+    return Array.from({ length: item.quantity }).map(() => label);
+  });
+
+  if (!labels.length) {
+    return new Response(tErrors("invalidInput"), { status: 400 });
+  }
+
+  const doc = new PDFDocument({ size: "A4", margin: 20 });
+  const chunks: Buffer[] = [];
+  doc.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+
+  const { width: pageWidth, height: pageHeight } = doc.page;
+  const cols = template === "3x8" ? 3 : 2;
+  const rows = template === "3x8" ? 8 : 5;
+  const labelWidth = (pageWidth - doc.page.margins.left - doc.page.margins.right) / cols;
+  const labelHeight = (pageHeight - doc.page.margins.top - doc.page.margins.bottom) / rows;
+
+  labels.forEach((label: LabelRow, index: number) => {
+    const position = index % (cols * rows);
+    const row = Math.floor(position / cols);
+    const col = position % cols;
+
+    if (position === 0 && index > 0) {
+      doc.addPage();
+    }
+
+    const x = doc.page.margins.left + col * labelWidth;
+    const y = doc.page.margins.top + row * labelHeight;
+
+    doc.rect(x, y, labelWidth, labelHeight).strokeColor("#EEEEEE").stroke();
+
+    const padding = 6;
+    const contentWidth = labelWidth - padding * 2;
+    const textY = y + padding;
+
+    doc.fontSize(9).fillColor("#111111");
+    doc.text(label.name, x + padding, textY, {
+      width: contentWidth,
+      height: labelHeight / 2,
+      ellipsis: true,
+    });
+
+    const priceText =
+      label.price !== null ? formatCurrency(label.price, toIntlLocale(locale)) : tPriceTags("noPrice");
+    doc.fontSize(12).fillColor("#000000").text(priceText, x + padding, y + labelHeight / 2, {
+      width: contentWidth,
+    });
+
+    doc.fontSize(7).fillColor("#444444");
+    const skuText = `${tPriceTags("sku")}: ${label.sku}`;
+    doc.text(skuText, x + padding, y + labelHeight - 30, { width: contentWidth });
+
+    if (label.barcode) {
+      doc.text(label.barcode, x + padding, y + labelHeight - 20, { width: contentWidth });
+    }
+
+    if (storeName) {
+      doc.text(storeName, x + padding, y + labelHeight - 10, { width: contentWidth });
+    }
+  });
+
+  doc.end();
+
+  await new Promise((resolve) => doc.on("end", resolve));
+
+  const pdf = Buffer.concat(chunks);
+  const response = new Response(pdf, {
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": "inline; filename=price-tags.pdf",
+    },
+  });
+
+  await recordFirstEvent({
+    organizationId: token.organizationId as string,
+    actorId: token.sub ?? null,
+    type: "first_price_tags_printed",
+    metadata: { template, storeId, count: parsedItems.length },
+  });
+
+  return response;
+};

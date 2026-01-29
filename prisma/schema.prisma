@@ -1,0 +1,804 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  STAFF
+}
+
+enum LegalEntityType {
+  IP
+  OSOO
+  AO
+  OTHER
+}
+
+enum StockMovementType {
+  RECEIVE
+  SALE
+  ADJUSTMENT
+  TRANSFER_IN
+  TRANSFER_OUT
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+enum StockCountStatus {
+  DRAFT
+  IN_PROGRESS
+  APPLIED
+  CANCELLED
+}
+
+enum AttributeType {
+  TEXT
+  NUMBER
+  SELECT
+  MULTI_SELECT
+}
+
+enum OrganizationPlan {
+  TRIAL
+  PRO
+}
+
+enum AuthTokenType {
+  EMAIL_VERIFY
+  PASSWORD_RESET
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  plan      OrganizationPlan @default(TRIAL)
+  trialEndsAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users           User[]
+  stores          Store[]
+  suppliers       Supplier[]
+  products        Product[]
+  units           Unit[]
+  productBarcodes ProductBarcode[]
+  productPacks    ProductPack[]
+  purchaseOrders  PurchaseOrder[]
+  auditLogs       AuditLog[]
+  importBatches   ImportBatch[]
+  stockCounts     StockCount[]
+  storePrices     StorePrice[]
+  productCosts    ProductCost[]
+  productBundleComponents ProductBundleComponent[]
+  stockLots       StockLot[]
+  attributeDefinitions AttributeDefinition[]
+  categoryTemplates CategoryAttributeTemplate[]
+  variantAttributeValues VariantAttributeValue[]
+  onboardingProgress OnboardingProgress?
+  productEvents   ProductEvent[]
+  deadLetterJobs  DeadLetterJob[]
+  impersonationSessions ImpersonationSession[]
+  inviteTokens    InviteToken[]
+  accessRequests  AccessRequest[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  organizationId String
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         Role
+  preferredLocale String @default("ru")
+  isActive     Boolean  @default(true)
+  emailVerifiedAt DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  auditLogs    AuditLog[]
+  idempotencyKeys IdempotencyKey[]
+  purchaseOrdersCreated PurchaseOrder[] @relation("purchaseOrdersCreated")
+  purchaseOrdersUpdated PurchaseOrder[] @relation("purchaseOrdersUpdated")
+  stockCountsCreated StockCount[] @relation("stockCountCreatedBy")
+  stockCountsApplied StockCount[] @relation("stockCountAppliedBy")
+  storePricesUpdated StorePrice[] @relation("storePricesUpdated")
+  stockMovements StockMovement[]
+  importBatchesCreated ImportBatch[] @relation("importBatchesCreated")
+  importBatchesRolledBack ImportBatch[] @relation("importBatchesRolledBack")
+  importRollbackReportsCreated ImportRollbackReport[] @relation("importRollbackReportsCreated")
+  impersonationSessionsCreated ImpersonationSession[] @relation("impersonationsCreated")
+  impersonationSessionsTargeted ImpersonationSession[] @relation("impersonationsTargeted")
+  deadLetterJobsResolved DeadLetterJob[] @relation("deadLetterResolvedBy")
+  productEventsCreated ProductEvent[] @relation("productEventsCreatedBy")
+  storeFeatureFlagsUpdated StoreFeatureFlag[]
+  inviteTokensCreated InviteToken[] @relation("inviteCreatedBy")
+  authTokens AuthToken[]
+}
+
+model Store {
+  id                String   @id @default(cuid())
+  organizationId    String
+  name              String
+  code              String
+  allowNegativeStock Boolean @default(false)
+  trackExpiryLots   Boolean @default(false)
+  legalEntityType   LegalEntityType?
+  legalName         String?
+  inn               String?
+  address           String?
+  phone             String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  inventorySnapshots InventorySnapshot[]
+  stockMovements StockMovement[]
+  reorderPolicies ReorderPolicy[]
+  forecastSnapshots ForecastSnapshot[]
+  purchaseOrders PurchaseOrder[]
+  stockCounts   StockCount[]
+  stockCountLines StockCountLine[]
+  stockLots     StockLot[]
+  storePrices   StorePrice[]
+  featureFlags StoreFeatureFlag[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId])
+}
+
+model Supplier {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  email          String?
+  phone          String?
+  notes          String? @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  products     Product[]
+  purchaseOrders PurchaseOrder[]
+
+  @@index([organizationId])
+}
+
+model Unit {
+  id             String   @id @default(cuid())
+  organizationId String
+  code           String
+  labelRu        String
+  labelKg        String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  products      Product[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId])
+}
+
+model Product {
+  id             String   @id @default(cuid())
+  organizationId String
+  supplierId     String?
+  sku            String
+  name           String
+  category       String?
+  unit           String
+  baseUnitId     String
+  basePriceKgs   Decimal? @db.Decimal(12, 2)
+  description    String? @db.Text
+  photoUrl       String?
+  isDeleted      Boolean  @default(false)
+  isBundle       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  supplier     Supplier? @relation(fields: [supplierId], references: [id])
+  baseUnit     Unit @relation(fields: [baseUnitId], references: [id])
+  barcodes     ProductBarcode[]
+  packs        ProductPack[]
+  variants     ProductVariant[]
+  inventorySnapshots InventorySnapshot[]
+  stockMovements StockMovement[]
+  reorderPolicies ReorderPolicy[]
+  forecastSnapshots ForecastSnapshot[]
+  purchaseOrderLines PurchaseOrderLine[]
+  bundleComponents ProductBundleComponent[] @relation("bundleComponents")
+  bundleParents    ProductBundleComponent[] @relation("bundleParents")
+  stockCounts      StockCountLine[]
+  stockLots        StockLot[]
+  storePrices      StorePrice[]
+  productCosts     ProductCost[]
+  attributeValues  VariantAttributeValue[]
+
+  @@unique([organizationId, sku])
+  @@index([organizationId])
+}
+
+model ProductBarcode {
+  id             String   @id @default(cuid())
+  organizationId String
+  productId      String
+  value          String
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  product       Product @relation(fields: [productId], references: [id])
+
+  @@unique([organizationId, value])
+  @@index([productId])
+  @@index([organizationId])
+}
+
+model ProductPack {
+  id                String   @id @default(cuid())
+  organizationId    String
+  productId         String
+  packName          String
+  packBarcode       String?
+  multiplierToBase  Int
+  allowInPurchasing Boolean @default(true)
+  allowInReceiving  Boolean @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  product      Product @relation(fields: [productId], references: [id])
+
+  @@unique([productId, packName])
+  @@unique([organizationId, packBarcode])
+  @@index([organizationId])
+  @@index([productId])
+}
+
+model ProductVariant {
+  id        String   @id @default(cuid())
+  productId String
+  name      String?
+  sku       String?
+  attributes Json
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id])
+  inventorySnapshots InventorySnapshot[]
+  stockMovements StockMovement[]
+  purchaseOrderLines PurchaseOrderLine[]
+  stockCounts StockCountLine[]
+  stockLots   StockLot[]
+  storePrices StorePrice[]
+  productCosts ProductCost[]
+  attributeValues VariantAttributeValue[]
+  bundleComponents ProductBundleComponent[] @relation("bundleComponentVariants")
+
+  @@index([productId])
+  @@index([sku])
+}
+
+model InventorySnapshot {
+  id                String   @id @default(cuid())
+  storeId           String
+  productId         String
+  variantId         String?
+  variantKey        String   @default("BASE")
+  onHand            Int
+  onOrder           Int      @default(0)
+  allowNegativeStock Boolean @default(false)
+  updatedAt         DateTime @updatedAt
+
+  store   Store   @relation(fields: [storeId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+  variant ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@unique([storeId, productId, variantKey])
+  @@index([storeId, productId, variantKey])
+  @@index([updatedAt])
+}
+
+model StockMovement {
+  id          String   @id @default(cuid())
+  storeId     String
+  productId   String
+  variantId   String?
+  stockLotId  String?
+  type        StockMovementType
+  qtyDelta    Int
+  referenceType String?
+  referenceId   String?
+  note        String?
+  createdAt   DateTime @default(now())
+  createdById String?
+
+  store   Store   @relation(fields: [storeId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+  variant ProductVariant? @relation(fields: [variantId], references: [id])
+  createdBy User? @relation(fields: [createdById], references: [id])
+  stockLot StockLot? @relation(fields: [stockLotId], references: [id])
+
+  @@index([storeId, productId, variantId, createdAt])
+  @@index([type, createdAt])
+}
+
+model PurchaseOrder {
+  id             String   @id @default(cuid())
+  organizationId String
+  storeId        String
+  supplierId     String
+  status         PurchaseOrderStatus @default(DRAFT)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  submittedAt    DateTime?
+  approvedAt     DateTime?
+  receivedAt     DateTime?
+  receivedEventId String? @unique
+  createdById    String?
+  updatedById    String?
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  store        Store @relation(fields: [storeId], references: [id])
+  supplier     Supplier @relation(fields: [supplierId], references: [id])
+  lines        PurchaseOrderLine[]
+  createdBy    User? @relation("purchaseOrdersCreated", fields: [createdById], references: [id])
+  updatedBy    User? @relation("purchaseOrdersUpdated", fields: [updatedById], references: [id])
+
+  @@index([status, createdAt])
+  @@index([storeId])
+}
+
+model PurchaseOrderLine {
+  id              String   @id @default(cuid())
+  purchaseOrderId String
+  productId       String
+  variantId       String?
+  variantKey      String   @default("BASE")
+  qtyOrdered      Int
+  qtyReceived     Int @default(0)
+  unitCost        Decimal? @db.Decimal(12, 2)
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  product       Product @relation(fields: [productId], references: [id])
+  variant       ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@unique([purchaseOrderId, productId, variantKey])
+  @@index([productId])
+}
+
+model ReorderPolicy {
+  id               String   @id @default(cuid())
+  storeId          String
+  productId        String
+  minStock         Int      @default(0)
+  leadTimeDays     Int
+  reviewPeriodDays Int
+  safetyStockDays  Int
+  minOrderQty      Int @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  store   Store   @relation(fields: [storeId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+
+  @@unique([storeId, productId])
+  @@index([storeId, productId])
+}
+
+model ForecastSnapshot {
+  id           String   @id @default(cuid())
+  storeId      String
+  productId    String
+  p50Daily     Float
+  p90Daily     Float
+  horizonDays  Int
+  generatedAt  DateTime @default(now())
+
+  store   Store   @relation(fields: [storeId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([storeId, productId, generatedAt])
+}
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  actorId        String?
+  action         String
+  entity         String
+  entityId       String
+  before         Json?
+  after          Json?
+  requestId      String
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  actor        User? @relation(fields: [actorId], references: [id])
+
+  @@index([createdAt])
+  @@index([entity, entityId])
+}
+
+model IdempotencyKey {
+  id         String   @id @default(cuid())
+  key        String
+  route      String
+  userId     String
+  response   Json?
+  responseHash String?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([key, route, userId])
+  @@index([createdAt])
+}
+
+model StockCount {
+  id             String   @id @default(cuid())
+  organizationId String
+  storeId        String
+  code           String
+  status         StockCountStatus @default(DRAFT)
+  notes          String? @db.Text
+  startedAt      DateTime?
+  appliedAt      DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  createdById    String?
+  appliedById    String?
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  store        Store @relation(fields: [storeId], references: [id])
+  createdBy    User? @relation("stockCountCreatedBy", fields: [createdById], references: [id])
+  appliedBy    User? @relation("stockCountAppliedBy", fields: [appliedById], references: [id])
+  lines        StockCountLine[]
+
+  @@unique([organizationId, code])
+  @@index([storeId, status, createdAt])
+  @@index([organizationId])
+}
+
+model StockCountLine {
+  id              String   @id @default(cuid())
+  stockCountId    String
+  storeId         String
+  productId       String
+  variantId       String?
+  variantKey      String   @default("BASE")
+  barcodeValue    String?
+  expectedOnHand  Int      @default(0)
+  countedQty      Int      @default(0)
+  deltaQty        Int      @default(0)
+  lastScannedAt   DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  stockCount StockCount @relation(fields: [stockCountId], references: [id])
+  store      Store @relation(fields: [storeId], references: [id])
+  product    Product @relation(fields: [productId], references: [id])
+  variant    ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@unique([stockCountId, productId, variantKey])
+  @@index([storeId, productId])
+}
+
+model StorePrice {
+  id             String   @id @default(cuid())
+  organizationId String
+  storeId        String
+  productId      String
+  variantId      String?
+  variantKey     String   @default("BASE")
+  priceKgs       Decimal  @db.Decimal(12, 2)
+  updatedAt      DateTime @updatedAt
+  updatedById    String?
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  store        Store @relation(fields: [storeId], references: [id])
+  product      Product @relation(fields: [productId], references: [id])
+  variant      ProductVariant? @relation(fields: [variantId], references: [id])
+  updatedBy    User? @relation("storePricesUpdated", fields: [updatedById], references: [id])
+
+  @@unique([organizationId, storeId, productId, variantKey])
+  @@index([storeId, productId])
+  @@index([organizationId])
+}
+
+model ProductCost {
+  id             String   @id @default(cuid())
+  organizationId String
+  productId      String
+  variantId      String?
+  variantKey     String   @default("BASE")
+  avgCostKgs     Decimal  @db.Decimal(12, 2)
+  costBasisQty   Int      @default(0)
+  lastReceiptAt  DateTime?
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  product      Product @relation(fields: [productId], references: [id])
+  variant      ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@unique([organizationId, productId, variantKey])
+  @@index([productId])
+}
+
+model ProductBundleComponent {
+  id                  String   @id @default(cuid())
+  organizationId      String
+  bundleProductId     String
+  componentProductId  String
+  componentVariantId  String?
+  qty                 Int
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  organization     Organization @relation(fields: [organizationId], references: [id])
+  bundleProduct    Product @relation("bundleComponents", fields: [bundleProductId], references: [id])
+  componentProduct Product @relation("bundleParents", fields: [componentProductId], references: [id])
+  componentVariant ProductVariant? @relation("bundleComponentVariants", fields: [componentVariantId], references: [id])
+
+  @@unique([bundleProductId, componentProductId, componentVariantId])
+  @@index([bundleProductId])
+}
+
+model StockLot {
+  id             String   @id @default(cuid())
+  organizationId String
+  storeId        String
+  productId      String
+  variantId      String?
+  variantKey     String   @default("BASE")
+  expiryDate     DateTime?
+  receivedAt     DateTime @default(now())
+  onHandQty      Int      @default(0)
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  store        Store @relation(fields: [storeId], references: [id])
+  product      Product @relation(fields: [productId], references: [id])
+  variant      ProductVariant? @relation(fields: [variantId], references: [id])
+  movements    StockMovement[]
+
+  @@index([storeId, productId, variantKey, expiryDate])
+}
+
+model AttributeDefinition {
+  id             String   @id @default(cuid())
+  organizationId String
+  key            String
+  labelRu        String
+  labelKg        String
+  type           AttributeType
+  optionsRu      Json?
+  optionsKg      Json?
+  required       Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  values       VariantAttributeValue[]
+  templates    CategoryAttributeTemplate[]
+
+  @@unique([organizationId, key])
+  @@index([organizationId])
+}
+
+model CategoryAttributeTemplate {
+  id             String   @id @default(cuid())
+  organizationId String
+  category       String
+  attributeKey   String
+  order          Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  definition   AttributeDefinition? @relation(fields: [organizationId, attributeKey], references: [organizationId, key])
+
+  @@unique([organizationId, category, attributeKey])
+  @@index([organizationId, category])
+}
+
+model VariantAttributeValue {
+  id             String   @id @default(cuid())
+  organizationId String
+  productId      String
+  variantId      String
+  key            String
+  value          Json
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  product      Product @relation(fields: [productId], references: [id])
+  variant      ProductVariant @relation(fields: [variantId], references: [id])
+  definition   AttributeDefinition? @relation(fields: [organizationId, key], references: [organizationId, key])
+
+  @@unique([variantId, key])
+  @@index([productId])
+}
+
+model ImportBatch {
+  id             String   @id @default(cuid())
+  organizationId String
+  type           String
+  createdById    String?
+  createdAt      DateTime @default(now())
+  summary        Json?
+  rolledBackAt   DateTime?
+  rolledBackById String?
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  createdBy    User? @relation("importBatchesCreated", fields: [createdById], references: [id])
+  rolledBackBy User? @relation("importBatchesRolledBack", fields: [rolledBackById], references: [id])
+  entities     ImportedEntity[]
+  rollbackReport ImportRollbackReport?
+
+  @@index([organizationId, createdAt])
+}
+
+model ImportedEntity {
+  id         String   @id @default(cuid())
+  batchId    String
+  entityType String
+  entityId   String
+  createdAt  DateTime @default(now())
+
+  batch ImportBatch @relation(fields: [batchId], references: [id])
+
+  @@unique([batchId, entityType, entityId])
+  @@index([entityType, entityId])
+}
+
+model ImportRollbackReport {
+  id          String   @id @default(cuid())
+  batchId     String   @unique
+  createdById String?
+  createdAt   DateTime @default(now())
+  summary     Json?
+
+  batch     ImportBatch @relation(fields: [batchId], references: [id])
+  createdBy User? @relation("importRollbackReportsCreated", fields: [createdById], references: [id])
+}
+
+model OnboardingProgress {
+  id             String   @id @default(cuid())
+  organizationId String   @unique
+  steps          Json
+  completedAt    DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+}
+
+model DeadLetterJob {
+  id            String   @id @default(cuid())
+  organizationId String?
+  jobName       String
+  payload       Json?
+  attempts      Int      @default(0)
+  lastError     String
+  lastErrorAt   DateTime @default(now())
+  resolvedAt    DateTime?
+  resolvedById  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  resolvedBy User? @relation("deadLetterResolvedBy", fields: [resolvedById], references: [id])
+
+  @@index([jobName, lastErrorAt])
+  @@index([resolvedAt])
+}
+
+model StoreFeatureFlag {
+  id            String   @id @default(cuid())
+  storeId       String
+  key           String
+  enabled       Boolean  @default(false)
+  updatedById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  store     Store  @relation(fields: [storeId], references: [id])
+  updatedBy User?  @relation(fields: [updatedById], references: [id])
+
+  @@unique([storeId, key])
+  @@index([storeId])
+}
+
+model ProductEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  type           String
+  actorId        String?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  actor        User? @relation("productEventsCreatedBy", fields: [actorId], references: [id])
+
+  @@index([organizationId, type, createdAt])
+}
+
+model ImpersonationSession {
+  id             String   @id @default(cuid())
+  organizationId String
+  createdById    String
+  targetUserId   String
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+  revokedAt      DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  createdBy    User @relation("impersonationsCreated", fields: [createdById], references: [id])
+  targetUser   User @relation("impersonationsTargeted", fields: [targetUserId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@index([targetUserId])
+  @@index([expiresAt])
+}
+
+model InviteToken {
+  id             String   @id @default(cuid())
+  organizationId String
+  email          String
+  role           Role
+  tokenHash      String   @unique
+  expiresAt      DateTime
+  createdById    String
+  acceptedAt     DateTime?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  createdBy    User @relation("inviteCreatedBy", fields: [createdById], references: [id])
+
+  @@index([organizationId, email])
+}
+
+model AccessRequest {
+  id        String   @id @default(cuid())
+  organizationId String?
+  email     String
+  orgName   String?
+  createdAt DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+
+  @@index([email])
+}
+
+model AuthToken {
+  id        String   @id @default(cuid())
+  userId    String?
+  email     String
+  type      AuthTokenType
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([email, type])
+}
